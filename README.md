@@ -393,7 +393,7 @@ Uninstall uses the registry ownership records to remove only matching Claude JSO
 
 ## Releasing
 
-Push a tag such as `v1.2.3` on `main`. The release workflow (`.github/workflows/release.yml`) runs the same gate as CI, builds one universal `claude-obs` for Apple Silicon and Intel Macs with `just release`, publishes its tarball and checksum as a GitHub release, and updates the formula in [heapsgoodstudio/homebrew-tap](https://github.com/heapsgoodstudio/homebrew-tap) from `packaging/homebrew/agent-observability.rb.tmpl`. The `TAP_TOKEN` repository secret must be a token that can push to the tap.
+Push a tag such as `v1.2.3` on `main`. The release workflow (`.github/workflows/release.yml`) runs the same gate as CI, builds one universal `claude-obs` for Apple Silicon and Intel Macs with `just release`, publishes its tarball and checksum as a GitHub release, and updates the formula in [heapsgoodstudio/homebrew-tap](https://github.com/heapsgoodstudio/homebrew-tap) from `packaging/homebrew/agent-observability.rb.tmpl`. The `TAP_DEPLOY_KEY` repository secret is the private half of an SSH deploy key that can push to the tap and nothing else.
 
 ## Licence
 
