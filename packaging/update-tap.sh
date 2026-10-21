@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Renders the Homebrew formula for one release from the checksums
 # packaging/release.sh wrote, and pushes it to heapsgoodstudio/homebrew-tap.
-# TAP_TOKEN must be a token allowed to push to that repository.
+# TAP_DEPLOY_KEY is the private half of an SSH deploy key with write access to
+# that repository and no other.
 #
-#   TAP_TOKEN=... packaging/update-tap.sh v1.2.3
+#   TAP_DEPLOY_KEY="$(cat key)" packaging/update-tap.sh v1.2.3
 set -euo pipefail
 
 tag="${1:?usage: packaging/update-tap.sh v1.2.3}"
-: "${TAP_TOKEN:?TAP_TOKEN must be set to a token that can push to heapsgoodstudio/homebrew-tap}"
+: "${TAP_DEPLOY_KEY:?TAP_DEPLOY_KEY must hold the tap deploy key}"
 version="${tag#v}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sums="$root/dist/release/checksums.txt"
@@ -20,7 +21,9 @@ fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-git clone -q --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/heapsgoodstudio/homebrew-tap.git" "$work/tap"
+(umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$work/key")
+export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+git clone -q --depth 1 git@github.com:heapsgoodstudio/homebrew-tap.git "$work/tap"
 mkdir -p "$work/tap/Formula"
 sed -e "s/{{VERSION}}/$version/g" -e "s/{{SHA256}}/$sha256/g" \
     "$root/packaging/homebrew/agent-observability.rb.tmpl" > "$work/tap/Formula/agent-observability.rb"

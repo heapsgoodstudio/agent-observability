@@ -5,9 +5,9 @@ name: release
 # its tarball and checksum to a GitHub release, and points the Homebrew
 # formula in heapsgoodstudio/homebrew-tap at it.
 #
-# The TAP_TOKEN secret is a fine-grained token with contents read and write on
-# heapsgoodstudio/homebrew-tap only; this workflow's own token cannot push to
-# another repository.
+# The TAP_DEPLOY_KEY secret is the private half of an SSH deploy key with
+# write access to heapsgoodstudio/homebrew-tap only; this workflow's own token
+# cannot push to another repository.
 
 on:
   push:
@@ -41,5 +41,5 @@ jobs:
 
       - name: update tap
         env:
-          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: bash packaging/update-tap.sh "$GITHUB_REF_NAME"
