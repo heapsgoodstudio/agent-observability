@@ -1,0 +1,51 @@
+name: ci
+
+# The gate CLAUDE.md defines under "Verify before claiming done", run as one
+# job so a branch ruleset can require a single "ci / check".
+#
+# macOS is not a preference. The stack is macOS only: launchd agents, BSD
+# `date -j` in the poller and alert scripts, `lsof` in the installer preflight,
+# and /usr/bin/jq, which Apple only ships from macOS 15. On ubuntu the poller's
+# date parsing alone would fail, so the runner is pinned rather than latest.
+#
+# Not covered here, deliberately: the notifier's click path needs a real app
+# bundle registered with the notification centre and a human to look at the
+# banner, so CLAUDE.md records it as hand-verified and it stays that way.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: preflight
+        run: |
+          sw_vers
+          # jq is hardcoded in the statusline scripts, so assert the exact
+          # path, not whatever is on PATH.
+          /usr/bin/jq --version
+
+      - uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: gate
+        run: nix develop --command just ci
+
+      - name: checkout still clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "the gate modified the checkout:"
+            git status --porcelain
+            exit 1
+          fi

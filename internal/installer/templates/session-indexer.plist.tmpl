@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{{LABEL_PREFIX}}.session-indexer</string>
+  <key>ProgramArguments</key><array>
+    <string>{{CLAUDE_OBS}}</string>
+    <string>index</string>
+    <string>--once</string>
+    <string>--install-dir</string>
+    <string>{{OBS_DIR}}</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>{{OBS_DIR}}/logs/session-indexer.log</string>
+  <key>StandardErrorPath</key><string>{{OBS_DIR}}/logs/session-indexer.log</string>
+</dict></plist>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{{LABEL_PREFIX}}.server</string>
+  <key>ProgramArguments</key><array>
+    <string>{{CLAUDE_OBS}}</string>
+    <string>serve</string>
+    <string>--install-dir</string>
+    <string>{{OBS_DIR}}</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>{{OBS_DIR}}/logs/server.log</string>
+  <key>StandardErrorPath</key><string>{{OBS_DIR}}/logs/server.log</string>
+</dict></plist>

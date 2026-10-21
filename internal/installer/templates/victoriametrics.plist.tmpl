@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{{LABEL_PREFIX}}.victoriametrics</string>
+  <key>ProgramArguments</key><array>
+    <string>{{OBS_DIR}}/bin/victoria-metrics-prod</string>
+    <string>-storageDataPath={{OBS_DIR}}/state/vmdata</string>
+    <string>-httpListenAddr=127.0.0.1:8428</string>
+    <string>-retentionPeriod=24</string>
+    <string>-search.latencyOffset=1s</string>
+    <string>-dedup.minScrapeInterval=1ms</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>{{OBS_DIR}}/logs/victoriametrics.log</string>
+  <key>StandardErrorPath</key><string>{{OBS_DIR}}/logs/victoriametrics.log</string>
+</dict></plist>

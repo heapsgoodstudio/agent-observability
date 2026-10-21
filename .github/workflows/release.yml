@@ -1,0 +1,45 @@
+name: release
+
+# Publishes a version: pushing a tag such as v1.2.3 runs the same gate as ci,
+# builds one universal claude-obs for Apple Silicon and Intel Macs, attaches
+# its tarball and checksum to a GitHub release, and points the Homebrew
+# formula in heapsgoodstudio/homebrew-tap at it.
+#
+# The TAP_TOKEN secret is a fine-grained token with contents read and write on
+# heapsgoodstudio/homebrew-tap only; this workflow's own token cannot push to
+# another repository.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@v23
+
+      - name: gate
+        run: nix develop --command just ci
+
+      - name: build
+        run: nix develop --command just release "$GITHUB_REF_NAME"
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/release/*.tar.gz dist/release/checksums.txt --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: update tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: bash packaging/update-tap.sh "$GITHUB_REF_NAME"

@@ -1,0 +1,14 @@
+-- profile is which Claude Code profile the session ran under: the same string
+-- internal/installer's ProfileName derives and OTEL_RESOURCE_ATTRIBUTES stamps
+-- on every metric and log, so a row here joins to that session's telemetry.
+--
+-- It is attribution rather than identity. Session ids are uuids, so profiles
+-- cannot collide on the primary key and rows from several profiles merge into
+-- one list correctly without this column; what they cannot do without it is
+-- say which profile they came from.
+--
+-- Existing rows default to the empty string, which readers treat as "indexed
+-- before this existed" and show as unattributed rather than guessing. Bumping
+-- internal/indexer's SchemaVersion alongside this migration is what fills them
+-- in: it clears transcript_state, forcing one full re-parse.
+ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT '';

@@ -1,0 +1,12 @@
+-- workspace is the descriptive name internal/workspace derives from a
+-- session's working directories: "owner/repo" when the session worked inside a
+-- git repository, a directory path otherwise. It sits beside project rather
+-- than replacing it because project is a join key (internal/server's
+-- projectsFromSessions attributes spend through it) while workspace is only
+-- ever displayed.
+--
+-- Existing rows default to the empty string, which readers treat as "not
+-- derived yet" and fall back to project for. Bumping internal/indexer's
+-- SchemaVersion alongside this migration is what fills them in: it clears
+-- transcript_state, forcing one full re-parse.
+ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '';

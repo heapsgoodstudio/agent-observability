@@ -1,0 +1,1041 @@
+syntax = "proto3";
+
+package claudeobs.v1;
+
+option go_package = "github.com/heapsgoodstudio/agent-observability/gen/claudeobs/v1;claudeobsv1";
+
+// Every response carries the identity envelope: the aggregation-ready part
+// of the contract. A future central collector ingests these same shapes.
+message Identity {
+  string machine_id = 1;   // IOPlatformUUID; empty when unavailable
+  string hostname = 2;
+  string user = 3;
+  string generated_at = 4; // RFC 3339
+}
+
+// ProfileRow is one instrumented profile, for the selector every page reads.
+//
+// The percentage is the ACCOUNT's, not the profile's, and account/domain are
+// carried beside it so a client can say so. Two profiles signed in to one
+// account therefore show the same number under the same account name, which
+// reads as one shared allowance rather than two.
+message ProfileRow {
+  string profile = 1;              // the OTel profile label: acme, studio, default
+  string account = 2;              // first 8 of the account uuid; empty when unknown
+  string domain = 3;
+  double max_pct = 4;              // the account's highest window percentage
+  bool has_max_pct = 5;
+  // usage_available reports whether Claude Code can fetch usage for this
+  // profile at all. It is false when Claude Code answers that the profile has
+  // no subscription and no rate limits, which is what a lapsed sign-in looks
+  // like: that profile's plan-window metrics will never appear, and saying so
+  // is the difference between a broken poller and a profile nobody is signed
+  // in to. Unknown when no probe response has been read, in which case a
+  // client must say nothing rather than assume either way.
+  bool usage_available = 6;
+  bool usage_available_known = 7;
+  // is_primary marks the profile config.env's PROFILE_DIR names.
+  bool is_primary = 8;
+  string provider = 9;
+  string display_name = 10;
+  bool enabled = 11;
+  string status = 12;
+}
+
+message ListProfilesRequest {}
+
+// GetUsageSnapshot answers "which accounts have headroom right now", in one
+// call, for a caller deciding where to put work.
+//
+// It reports facts and deliberately no verdict. Which percentage counts as too
+// high, which profile to prefer, and what to do when none qualifies are the
+// calling tool's policy, and a threshold baked in here would be one project's
+// rule sitting in a place every other project would have to work around.
+message GetUsageSnapshotRequest {
+  // max_age_s is how stale a reading the caller will accept, in seconds.
+  //
+  // IT IS CURRENTLY IGNORED, because on-demand probing is off by default: see
+  // GetUsageSnapshotResponse.on_demand_probe_enabled, which says so in the
+  // response rather than leaving a caller to wonder why its reading is older
+  // than it asked for. The field is kept because the intent is worth stating
+  // and because turning probing back on is one config key.
+  //
+  // When enabled, any profile whose reading was last CONFIRMED longer ago than
+  // this is probed before the response returns: the same live fetch the /usage
+  // panel makes. It is measured against the confirmation age rather than the
+  // change age, because Claude Code does not rewrite its cache when a fetch
+  // comes back identical, so a profile at a steady percentage would otherwise
+  // be re-probed forever while its figures were already correct.
+  int32 max_age_s = 1;
+  string provider = 2;
+  string account_key = 3;
+  string profile = 4;
+}
+
+// UsageWindow is one plan window. reset_ts is epoch seconds rather than the
+// panel's own wording ("Resets Sep 14 at 5am (Europe/Warsaw)"), so a caller
+// needs no date, month-name or timezone parsing to know when a window frees up.
+message UsageWindow {
+  string window = 1;      // five_hour | seven_day | weekly_scoped
+  double pct = 2;
+  bool has_pct = 3;
+  double reset_ts = 4;
+  bool has_reset = 5;
+  // source is where this figure came from: "statusline" (the tap, current
+  // within a minute while a session renders), "cache" (the usage cache the
+  // poller refreshes), or "probe" (fetched live to satisfy max_age_s).
+  string source = 6;
+}
+
+// UsageProfile is everything known about one profile's standing.
+message UsageProfile {
+  string profile = 1;
+  string account = 2;     // first 8 of the account uuid: two profiles sharing it share one allowance
+  string domain = 3;
+  repeated UsageWindow windows = 4;
+
+  // overage_enabled says whether this account can be billed past its cap at
+  // all. overage_known is what keeps the pair honest: an account that throttles
+  // at 100% rather than charging is a different thing from one nothing has
+  // reported on, and reading absence as "billing is on" is how a caller raises
+  // a money alarm about an account that cannot spend a penny.
+  bool overage_enabled = 5;
+  bool overage_known = 6;
+  double extra_usage_usd = 7;
+  bool extra_usage_known = 8;
+
+  // usage_available reports whether Claude Code can fetch usage for this
+  // profile at all: false for a profile whose sign-in has lapsed, whose
+  // windows will therefore never appear. A caller must treat that as "cannot
+  // answer", not as "has headroom".
+  bool usage_available = 9;
+  bool usage_available_known = 10;
+
+  // confirmed_age_s is how long since a live fetch confirmed these figures and
+  // changed_age_s is how long since they last moved. They are different
+  // questions and only the first is freshness; see
+  // AccountPlan.plan_data_confirmed_age_s.
+  double confirmed_age_s = 11;
+  bool confirmed_age_known = 12;
+  double changed_age_s = 13;
+  bool changed_age_known = 14;
+
+  // probed is true when this profile was fetched live to satisfy max_age_s,
+  // and error carries why a probe failed. A failed probe leaves whatever the
+  // store held rather than blanking the row, so a caller still sees the last
+  // known figures and is told they are not fresh.
+  bool probed = 15;
+  string error = 16;
+}
+
+message GetUsageSnapshotResponse {
+  Identity identity = 1;
+  // Ordered by the account percentage, highest first, so whichever account is
+  // closest to throttling is first whatever the caller does with the list.
+  repeated UsageProfile profiles = 2;
+  string primary_profile = 3;
+  // generated_at is when this snapshot was assembled, RFC 3339.
+  string generated_at = 4;
+  repeated SectionError errors = 5;
+  // on_demand_probe_enabled says whether max_age_s did anything. False means
+  // every row is whatever the poller's store held, however old, and a caller
+  // that asked for something fresher did not get it.
+  //
+  // It is false by default. A probe is a full Claude Code startup, hooks and
+  // all, and having the server spawn those on request is a bigger thing than
+  // an observability read should be; the poller already refreshes every
+  // profile every five minutes, which is fresh enough for the callers this
+  // serves. USAGE_ON_DEMAND_PROBE=1 in config.env turns it on.
+  //
+  // A caller must NOT refuse a reading for being old. Every row carries
+  // confirmed_age_s so staleness can be reported, and reporting it is the
+  // whole permitted use: refusing on it would turn a quiet poller, or a
+  // profile whose numbers simply have not moved, into a blocked decision.
+  bool on_demand_probe_enabled = 6;
+  int32 schema_version = 7;
+  repeated AccountSnapshot accounts = 8;
+}
+
+// Neutral account view. Presence is meaningful: absent is never measured zero.
+message AccountSnapshot {
+  string key = 1;
+  string provider = 2;
+  string account = 3;
+  string display_name = 4;
+  string plan = 5;
+  repeated ProfileRow profiles = 6;
+  repeated AllowanceWindow windows = 7;
+  BillingSnapshot billing = 8;
+  optional double observed_at = 9;
+  // Claude: oldest confirmation across selected allowance windows; absent
+  // when any window lacks confirmation. Codex: provider quota fetch time.
+  // Individual window timestamps explain partial freshness.
+  optional double confirmed_at = 10;
+  string state = 11; // fresh, stale, unknown, unavailable
+  string error = 12;
+  string current_window_id = 13;
+  string weekly_window_id = 14;
+  repeated string capabilities = 15;
+  optional bool included_usage_allowed = 16;
+  repeated CodexLimitBucket codex_buckets = 17;
+  optional double reset_credits_available = 18;
+  string identity_state = 19; // observed, unresolved
+  string coverage_note = 20;
+  // month_to_date_tokens is set for pay-as-you-go harness accounts (Oh My Pi,
+  // opencode): input, output and cache tokens this month. It is the headline
+  // for an account with no recorded cost.
+  optional double month_to_date_tokens = 21;
+  // hidden is true for a detected-provider account a person hid in Settings.
+  // Sidebar and Overview leave it out; its own page and data remain.
+  bool hidden = 22;
+}
+message AllowanceWindow {
+  string id = 1;
+  string label = 2;
+  string kind = 3;
+  string bucket_id = 4;
+  string model = 5;
+  optional double duration_seconds = 6;
+  optional double used_percent = 7;
+  optional double remaining_percent = 8;
+  optional double resets_at = 9;
+  optional double observed_at = 10;
+  optional double confirmed_at = 11;
+  string state = 12;
+  string source = 13;
+  string error = 14;
+}
+message BillingSnapshot {
+  optional bool enabled = 1;
+  optional double reported_overage_usd = 2;
+  optional double estimated_overage_usd = 3;
+  string currency = 4;
+  string period = 5;
+  optional double observed_at = 6;
+  string state = 7;
+  string note = 8;
+  string pricing_source = 9;
+  // False when some observed pay-as-you-go requests could not be priced.
+  optional bool estimated_overage_complete = 10;
+  // Credits the provider reports as used beyond the included allowance in the
+  // current period (Codex). Provider units, never dollars.
+  optional double reported_overage_credits = 11;
+  // The configured price per credit behind estimated_overage_usd when that
+  // estimate is derived from reported_overage_credits.
+  optional double credit_price_usd = 12;
+  // When the reported amount's period starts over.
+  optional double period_resets_at = 13;
+}
+message GetAccountHistoryRequest {
+  string account_key = 1;
+  int32 days = 2; // default 7, maximum 90
+}
+message AllowanceHistorySeries {
+  string window_id = 1;
+  string label = 2;
+  optional double reset_at = 3;
+  repeated Point points = 4;
+  repeated Band gaps = 5;
+  string coverage_note = 6;
+  string source = 7;
+}
+message BillingHistorySeries {
+  string period = 1;
+  string currency = 2;
+  repeated Point points = 3;
+  repeated Band gaps = 4;
+  string source = 5;
+}
+message GetAccountHistoryResponse {
+  string account_key = 1;
+  string provider = 2;
+  repeated AllowanceHistorySeries windows = 3;
+  repeated BillingHistorySeries billing = 4;
+  repeated SectionError errors = 5;
+  string coverage_note = 6;
+  double from = 7;
+  double to = 8;
+}
+
+message ListProfilesResponse {
+  Identity identity = 1;
+  // profiles is ordered by the account percentage, highest first, so the
+  // account closest to throttling is the first thing a picker shows. A
+  // profile with no percentage sorts last, by name.
+  repeated ProfileRow profiles = 2;
+  string primary_profile = 3;
+  repeated SectionError errors = 4;
+}
+
+message GetMetaRequest {}
+
+message GetMetaResponse {
+  Identity identity = 1;
+  string version = 2;      // claude-obs build version
+  string install_dir = 3;
+  int32 dash_port = 4;
+  int32 vm_port = 5;
+  int32 vl_port = 6;
+  int32 analysis_timeout_s = 7;
+  int32 advice_evidence_timeout_s = 8;
+  repeated string analysis_models = 9;
+  repeated string advice_depths = 10;
+  repeated AnalysisTarget analysis_targets = 11;
+  bool runner_busy = 12;
+}
+
+message AnalysisTarget {
+  string provider = 1;
+  string profile = 2;
+  string name = 3;
+  string account = 4;
+  bool available = 5;
+  string unavailable_reason = 6;
+  repeated string models = 7;
+}
+
+message GetAnalysisModelsRequest {
+  string provider = 1;
+  string profile = 2;
+}
+
+message AnalysisModel {
+  string id = 1;
+  string name = 2;
+  string provider = 3; // Inference provider for harnesses such as OMP/OpenCode.
+}
+
+message GetAnalysisModelsResponse {
+  repeated AnalysisModel models = 1;
+}
+
+message Point {
+  double ts = 1;
+  double value = 2;
+}
+
+message Band {
+  double start = 1;
+  double end = 2;
+}
+
+// One panel's failure, carried in-band so the page degrades per panel.
+message SectionError {
+  string section = 1;
+  string error = 2;
+}
+
+message PlanWindow {
+  string window = 1;       // five_hour | seven_day | weekly_scoped
+  double pct = 2;
+  bool has_pct = 3;
+  double reset_ts = 4;
+  bool has_reset = 5;
+  string pct_source = 6;   // source pickFreshest chose for pct
+  string reset_source = 7;
+}
+
+// AccountPlan is one Claude account's allowance: its windows, its billing
+// state, and which instrumented profiles are signed in to it.
+//
+// The account is the unit rather than the profile because the allowance is
+// the account's. Several profile directories can be signed in to one account,
+// and presenting those as separate rows would read as that many separate
+// allowances.
+message AccountPlan {
+  string account = 1;               // first 8 of the account uuid; the join key
+  string display_name = 2;          // a profile name, or the email domain
+  string domain = 3;
+  repeated string profiles = 4;     // every instrumented profile on this account
+  repeated PlanWindow windows = 5;
+  double max_pct = 6;               // highest window pct, for ranking and pickers
+  bool has_max_pct = 7;
+  // overage_enabled distinguishes "billed nothing" from "cannot be billed".
+  // An account with extra usage switched off throttles at 100% instead of
+  // charging, so rendering its billed figure as $0.00 would read as "spent
+  // nothing" rather than "cannot spend".
+  bool overage_enabled = 8;
+  bool overage_known = 9;
+  double extra_usage_usd = 10;
+  bool extra_usage_known = 11;
+  bool in_overage = 12;
+  // plan_data_age_s is how long since these figures last CHANGED, which is
+  // what Claude Code's own fetchedAtMs records. It is not how long since
+  // anyone checked: Claude Code does not rewrite its cache when a fetch comes
+  // back identical, so an account sitting at a steady percentage ages
+  // indefinitely while its numbers are correct to the second.
+  double plan_data_age_s = 13;
+  bool age_known = 14;
+  // plan_data_confirmed_age_s is how long since a live fetch last CONFIRMED
+  // them, which is the freshness a reader actually wants and the one a stale
+  // badge should be computed from. Unknown when nothing has ever confirmed
+  // (a signed-out profile, or an install running with the probe disabled),
+  // in which case a client must say so rather than fall back to the age
+  // above and call it confirmed.
+  double plan_data_confirmed_age_s = 15;
+  bool confirmed_age_known = 16;
+}
+
+message AttrRow {
+  string key = 1;
+  double value = 2;
+}
+
+message ModelUsageRow {
+  string model = 1;
+  double cost_usd = 2;
+  double output = 3;
+  double cache_read = 4;
+  double cache_creation = 5;
+  double input = 6;
+}
+
+// Every request that can be narrowed to one profile carries the same field,
+// spelled the same way: the profile name (acme, studio, default), empty
+// meaning every profile. It is the profile and never the account, because a
+// profile is what a session, a token and a dollar belong to. Anything about an
+// allowance (plan windows, reset times, billed dollars, overage) is resolved to
+// that profile's ACCOUNT server-side instead, since two profiles can share one
+// allowance and splitting it between them would be inventing a number.
+message GetOverviewRequest {
+  string profile = 1;
+}
+
+message GetOverviewResponse {
+  Identity identity = 1;
+  bool in_overage = 2;
+  bool overage_known = 3;
+  double plan_data_age_s = 4;
+  bool age_known = 5;
+  double burn_per_hour_usd = 6;
+  bool burn_recent = 7;
+  repeated Point burn_daily = 8;
+  double today_real_usd = 9;
+  double today_notional_usd = 10;
+  double billed_cache_age_s = 11;
+  bool billed_age_known = 12;
+  repeated Point today_real_daily = 13;
+  repeated PlanWindow windows = 14;
+  map<string, double> source_ages = 15;
+  double overage_mtd_usd = 16;
+  repeated Point overage_curve = 17;
+  repeated Band overage_bands = 18;
+  repeated AttrRow by_model_7d = 19;
+  string by_model_note = 20;
+  repeated ModelUsageRow model_usage_7d = 21;
+  repeated AttrRow by_source_7d = 22;
+  string by_source_note = 23;
+  repeated SectionError errors = 24;
+  bool today_real_known = 25;
+  bool today_notional_known = 26;
+  // accounts is the multi-account view. The flat fields above (windows,
+  // in_overage, source_ages) describe primary_account only, so an install
+  // instrumenting one profile reads exactly as it always did.
+  repeated AccountPlan accounts = 27;
+  string primary_account = 28;
+  // See AccountPlan.plan_data_confirmed_age_s. These describe primary_account,
+  // the way plan_data_age_s beside them already does.
+  double plan_data_confirmed_age_s = 29;
+  bool confirmed_age_known = 30;
+}
+
+message GetSpendRequest {
+  string period = 1;   // 24h | 7d | 30d | mtd | all
+  string measure = 2;  // notional | billed
+  string project = 3;  // optional filter for the project attribution
+  // profile narrows every panel to one profile; empty is every profile. See
+  // GetOverviewRequest.profile. The billed measure is the exception noted
+  // there: it resolves to the profile's account and says so.
+  string profile = 4;
+}
+
+message ChartSeries {
+  string label = 1;
+  repeated Point points = 2;
+}
+
+message Attribution {
+  string label = 1;    // model | query_source | agent.name | skill.name | effort | mcp_server.name | project
+  repeated AttrRow rows = 2;
+  string note = 3;
+  string error = 4;
+}
+
+message DeliveryRow {
+  string project = 1;
+  double prs = 2;
+  double commits = 3;
+  double sessions = 4;
+  double session_cost_usd = 5;
+}
+
+message GetSpendResponse {
+  Identity identity = 1;
+  repeated ChartSeries daily_cost = 2;
+  double daily_cost_total_usd = 3;
+  repeated Point heatmap_hourly = 4;
+  repeated ModelUsageRow model_usage = 5;
+  string model_usage_note = 6;
+  double delivery_prs = 7;
+  double delivery_commits = 8;
+  double delivery_session_cost_usd = 9;
+  repeated DeliveryRow delivery_rows = 10;
+  repeated Attribution attributions = 11;
+  string measure_note = 12;
+  repeated SectionError errors = 13;
+}
+
+message GetFindingsRequest {
+  string provider = 1;
+  string account_key = 2;
+  string profile = 3;
+}
+
+message Finding {
+  string id = 1;
+  string severity = 2;  // high | medium | info | clean | insufficient
+  string title = 3;
+  string evidence = 4;
+  string fix = 5;
+  string window = 6;
+  double impact = 7;
+}
+
+message GetFindingsResponse {
+  Identity identity = 1;
+  double cost_7d = 2;
+  double overage_7d = 3;
+  bool overage_known = 4;
+  double active_hours_7d = 5;
+  double commits_7d = 6;
+  double lines_7d = 7;
+  repeated Finding findings = 8;
+  // proto3's implicit 0 default is the deliberate absent sentinel here: no
+  // log line has ever been observed at epoch 0, so 0 means "no logs seen"
+  // rather than a real timestamp, matching findings.js's falsy check on
+  // vl.logsStart (a genuinely unset value and one that parsed to zero read
+  // the same way).
+  double logs_start_ts = 9;
+  bool vm_ok = 10;
+  bool vl_ok = 11;
+  bool index_ok = 12;
+  int32 badge_count = 13;
+  repeated SectionError errors = 14;
+  string scope_note = 15;
+  string provider = 16;
+  string account_key = 17;
+  string profile = 18;
+}
+
+message GetHealthRequest {}
+
+message HealthCheck {
+  string name = 1;
+  string state = 2;   // ok | warn | bad | unknown
+  string detail = 3;
+}
+
+message GetHealthResponse {
+  Identity identity = 1;
+  repeated HealthCheck checks = 2;
+  repeated AttrRow log_volume_24h = 3;
+  string vm_retention = 4;
+  string vl_retention = 5;
+  bool retention_observed = 6;
+  bool healthy = 7;
+}
+
+message TokenTotals {
+  double input = 1;
+  double output = 2;
+  double cache_read = 3;
+  double cache_creation = 4;
+}
+
+message ModelCost {
+  string model = 1;
+  double cost_usd = 2;
+}
+
+message TrajectoryPoint {
+  double ts = 1;
+  double cum_cost_usd = 2;
+  // Request input, including cache reads/writes. Zero means no observation;
+  // Claude subagent/background prompts are excluded from the main context.
+  double context_tokens = 3;
+}
+
+message SessionRow {
+  string id = 1;
+  string project = 2;
+  double start = 3;
+  double end = 4;
+  double cost_usd = 5;
+  double requests = 6;
+  TokenTotals tokens = 7;
+  repeated ModelCost models = 8;
+  double sidechain_cost_usd = 9;
+  double tool_calls = 10;
+  double user_turns = 11;
+  repeated string skills = 12;
+  repeated string mcp_servers = 13;
+  bool has_transcript = 14;
+  bool analysed = 15;
+  bool live = 16;
+  bool billed_overlap = 17;
+  // workspace is the descriptive name for where the session worked
+  // ("owner/repo" for a git repository, a directory path otherwise), while
+  // project stays Claude Code's own encoded launch-directory key. Empty for a
+  // session indexed before the field existed; clients fall back to project.
+  string workspace = 18;
+  // profile is which Claude Code profile the session ran under, the same
+  // name that profile's telemetry carries as an OTel resource attribute.
+  // Empty for a session indexed before the field existed, which clients show
+  // as unattributed rather than guessing.
+  string profile = 21;
+  // commits and pull_requests come from Claude Code's own live counters,
+  // which have no historical backfill: a transcript cannot say whether a
+  // command actually opened a pull request. Both read 0 for any session that
+  // ended before the collector started, which is not the same as a session
+  // that genuinely made none, so clients render them blank rather than "0".
+  double commits = 19;
+  double pull_requests = 20;
+  string provider = 22;
+  string native_id = 23;
+  string parent_id = 24;
+  bool cost_known = 25;
+  bool usage_known = 26;
+  double reasoning_tokens = 27;
+  double error_count = 28;
+  double duration_ms = 29;
+  bool tools_known = 30;
+  bool errors_known = 31;
+  bool duration_known = 32;
+}
+
+message ListSessionsRequest {
+  string account_key = 3;
+  string provider = 2; // empty, claude, codex or omp
+  // profile narrows the list to one profile; empty is every profile. See
+  // GetOverviewRequest.profile. A row whose own profile is empty (indexed
+  // before the column existed) matches no filter rather than being folded
+  // into one, which is the same rule profileLabel renders as a dash.
+  string profile = 1;
+}
+
+message ListSessionsResponse {
+  Identity identity = 1;
+  repeated SessionRow sessions = 2;
+  string generated_at = 3;
+  bool index_stale = 4;
+  bool overage_observed = 5;
+  repeated SectionError errors = 6;
+  string scope_note = 7;
+  string provider = 8;
+  string account_key = 9;
+  string profile = 10;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message GetSessionResponse {
+  Identity identity = 1;
+  SessionRow row = 2;
+  map<string, int64> tools = 3;
+  repeated TrajectoryPoint trajectory = 4;
+  bool live = 5;
+  double real_cost_usd = 6;
+  bool overage_observed = 7;
+  repeated SectionError errors = 8;
+}
+
+message AnalysisRun {
+  string state = 1;
+  string model = 2;
+  string depth = 3;
+  double started_at = 4;
+  double finished_at = 5;
+  string error = 6;
+  string run_session_id = 7;
+  double subagents = 8;
+  bool has_subagents = 9;
+  string provider = 10;
+  string profile = 11;
+  string source_provider = 12;
+  string source_profile = 13;
+  string source_account_key = 14;
+}
+
+// Report is one generated report: the structured JSON a run prints, parsed and
+// normalized server-side by internal/report. Band fields travel as strings, the
+// way AnalysisRun.state and Finding.severity already do, and a band outside its
+// set arrives blank so a client omits the chip rather than printing a word it
+// has no tone for. This message, internal/report's structs and
+// internal/analysis/prompts/report-contract.md are three spellings of one
+// schema and must agree.
+message Report {
+  int32 schema = 1;
+  string verdict = 2;    // "efficient" | "mixed" | "wasteful"
+  string avoidable = 3;  // "none" | "small" | "moderate" | "large"
+  string headline = 4;
+  string summary = 5;
+  // coverage names what the run actually read, when that limits the answer.
+  string coverage = 6;
+  repeated string story = 7;
+  repeated ReportDriver cost_drivers = 8;
+  repeated ReportProblem problems = 9;
+  repeated ReportGood good = 10;
+  repeated ReportAction actions = 11;
+  // config_changes only ever appears on an advice report: nothing about one
+  // session's transcript says what a setting should be.
+  repeated ReportConfigChange config_changes = 12;
+  repeated ReportFine fine = 13;
+  // True only for reports generated with the allowance-aware contract.
+  bool allowance_aware = 14;
+}
+
+// ReportDriver is a legacy token-cost valuation, retained for old reports.
+// It is not evidence of billing and is omitted from allowance-aware reports.
+message ReportDriver {
+  string label = 1;
+  double amount_usd = 2;
+  double share_pct = 3;
+  string plain = 4;
+}
+
+message ReportProblem {
+  string title = 1;
+  string what_happened = 2;
+  string why_it_costs = 3;
+  string fix = 4;
+  string cost = 5;  // "small" | "moderate" | "large"
+  repeated string evidence = 6;
+  string confidence = 7;
+  string category = 8;
+}
+
+message ReportGood {
+  string title = 1;
+  string what = 2;
+  string why_good = 3;
+}
+
+message ReportAction {
+  // do_this is "do" in the JSON contract and in the Go struct; renamed here
+  // only because "do" is a keyword in the generated Go.
+  string do_this = 1;
+  string why = 2;
+  string effort = 3;  // "low" | "medium" | "high"
+  string saving = 4;  // "small" | "moderate" | "large"
+  string verification = 5;
+}
+
+message ReportConfigChange {
+  string file = 1;
+  string setting = 2;
+  string change = 3;
+  string why = 4;
+}
+
+message ReportFine {
+  string title = 1;
+  string why_fine = 2;
+}
+
+message StartAnalysisRequest {
+  string id = 1;
+  string model = 2;
+  string provider = 3; // evaluator, independent of the indexed session source
+  string profile = 4;
+}
+
+message StartAnalysisResponse {}
+
+message GetAnalysisRequest {
+  string id = 1;
+}
+
+message GetAnalysisResponse {
+  Identity identity = 1;
+  AnalysisRun run = 2;
+  string report_md = 3;
+  int32 timeout_s = 4;
+  bool runner_busy = 5;
+  // Exactly one of report and report_md is ever populated: the structured
+  // report when this run produced one, report_md when it did not or when the
+  // report predates the structured format.
+  Report report = 6;
+}
+
+message StartAdviceRequest {
+  string model = 1;
+  string depth = 2;
+  string provider = 3;
+  string account_key = 4;
+  string profile = 5;
+  string execution_profile = 6;
+  string execution_provider = 7; // provider/profile above select evidence
+}
+
+message StartAdviceResponse {}
+
+message GetAdviceRequest {
+  string provider = 1;
+  string account_key = 2;
+  string profile = 3;
+}
+
+message GetAdviceResponse {
+  Identity identity = 1;
+  AnalysisRun run = 2;
+  string report_md = 3;
+  int32 timeout_s = 4;
+  bool runner_busy = 5;
+  // Exactly one of report and report_md is ever populated; see
+  // GetAnalysisResponse.report.
+  Report report = 6;
+  string scope_note = 7;
+  string provider = 8;
+  string account_key = 9;
+  string profile = 10;
+  string execution_profile = 11;
+}
+
+// Settings uses configured profiles even before telemetry is available.
+message ConfiguredProfile {
+  string id = 1;
+  string provider = 2;
+  string name = 3;
+  string directory = 4;
+  bool enabled = 5;
+  bool is_primary = 6;
+  string status = 7;
+  string detail = 8;
+  double last_seen = 9;
+}
+message ImportStatus {
+  string state = 1; // idle, running, complete, failed
+  string profile = 2;
+  string message = 3;
+  double started_at = 4;
+  double finished_at = 5;
+  double sessions = 6;
+}
+// SetAccountHidden hides or shows one Oh My Pi or opencode account
+// ("opencode:wire"). Hiding deletes nothing and collection continues.
+message SetAccountHiddenRequest {
+  string account_key = 1;
+  bool hidden = 2;
+}
+message SetAccountHiddenResponse {}
+message GetSettingsRequest {}
+message GetSettingsResponse {
+  repeated ConfiguredProfile profiles = 1;
+  string claude_default_dir = 2;
+  string codex_default_dir = 3;
+  ImportStatus history_import = 4;
+  string omp_default_dir = 5;
+  string opencode_default_dir = 6;
+}
+message SaveProfileRequest { ConfiguredProfile profile = 1; }
+message SaveProfileResponse { ConfiguredProfile profile = 1; }
+message RemoveProfileRequest { string id = 1; }
+message RemoveProfileResponse {}
+message RepairProfileRequest { string id = 1; }
+message RepairProfileResponse { ConfiguredProfile profile = 1; }
+message ImportHistoryRequest { string profile = 1; }
+message ImportHistoryResponse { ImportStatus history_import = 1; }
+message CodexUsageWindow {
+  string profile = 1;
+  string account = 2;
+  string name = 3;
+  double used_percent = 4;
+  double resets_at = 5;
+  double window_minutes = 6;
+  double fetched_at = 7;
+  bool stale = 8;
+  string limit_id = 9;
+  string kind = 10;
+  string profile_name = 11;
+}
+message MonitoringModel {
+  string model = 1;
+  double estimated_cost_usd = 2;
+}
+message CodexCredits {
+  bool has_credits = 1;
+  bool unlimited = 2;
+  // Provider units, never assumed to be dollars. Absence means unavailable.
+  optional string balance = 3;
+}
+message CodexIndividualLimit {
+  string limit = 1;
+  string used = 2;
+  double remaining_percent = 3;
+  double resets_at = 4;
+}
+message CodexLimitBucket {
+  string limit_id = 1;
+  string name = 2;
+  string normal_model_slug = 3;
+  CodexCredits credits = 4;
+  CodexIndividualLimit individual_limit = 5;
+  optional bool spend_control_reached = 6;
+  string rate_limit_reached_type = 7;
+}
+message CodexAccountUsage {
+  string profile = 1;
+  string account = 2;
+  string name = 3;
+  string plan_type = 4;
+  double fetched_at = 5;
+  bool stale = 6;
+  optional bool ordinary_usage_allowed = 7;
+  optional double reset_credits_available = 8;
+  repeated CodexLimitBucket buckets = 9;
+}
+message CodexBillingSummary {
+  // Never populated from whole-session API-equivalent valuations.
+  // Missing amounts are unknown, not zero and not included usage.
+  optional double reported_overage_usd = 1;
+  optional double estimated_overage_usd = 2;
+  double included_requests = 3;
+  double outside_cap_requests = 4;
+  double unclassified_requests = 5;
+  double unclassified_sessions = 6;
+  string pricing_source_url = 7;
+  string pricing_checked_at = 8;
+  string note = 9;
+  // Credits Codex reports as used under each account's individual credit
+  // limit in its current period, counted once per account. Provider units.
+  optional double reported_overage_credits = 10;
+  // The configured price per credit behind estimated_overage_usd when that
+  // estimate is derived from reported_overage_credits.
+  optional double credit_price_usd = 11;
+}
+// GetPayAsYouGo reports usage that no plan includes: requests a pay-as-you-go
+// harness (Oh My Pi or opencode) sent to an inference provider (Baseten,
+// Fireworks and so on). Every dollar here is the harness's own estimate, the
+// provider's token counts priced at its catalog rates, and never a bill. A provider appears when it has any
+// cost or any request whose cost omp could not price; a provider whose every
+// request was free, such as a local model, does not.
+message GetPayAsYouGoRequest {
+  // profile narrows to one profile of the harness; empty is every profile.
+  string profile = 1;
+  // harness is "omp" or "opencode"; empty means "omp", the only harness this
+  // call served before opencode existed.
+  string harness = 2;
+}
+message PaygDay {
+  string day = 1;         // local calendar date, YYYY-MM-DD
+  double cost_usd = 2;
+  double requests = 3;
+  double tokens = 4;      // input + output + cache read + cache write
+}
+message PaygModel {
+  string model = 1;       // canonical model name, e.g. glm-5.3-flash
+  double cost_usd = 2;
+  bool cost_complete = 3; // false when some requests had no price
+  double requests = 4;
+  double input = 5;
+  double output = 6;
+  double cache_read = 7;
+  double cache_write = 8;
+}
+message PaygProvider {
+  string provider = 1;             // canonical: baseten, fireworks, ...
+  double month_to_date_usd = 2;
+  bool month_to_date_complete = 3;
+  double last_30_days_usd = 4;
+  bool last_30_days_complete = 5;
+  // days covers the last 30 local days, oldest first, zero-filled.
+  repeated PaygDay days = 6;
+  // models covers the current month.
+  repeated PaygModel models = 7;
+  string last_active_day = 8;      // empty when never used
+  // cost_recorded is false when the harness recorded no cost for any of this
+  // provider's requests: a local model, or one the harness cannot price.
+  // Token usage is then the figure to show, never a dollar amount as spend.
+  bool cost_recorded = 9;
+  double month_to_date_tokens = 10;
+  double last_30_days_tokens = 11;
+}
+message GetPayAsYouGoResponse {
+  Identity identity = 1;
+  repeated PaygProvider providers = 2;
+  // configured_profiles counts omp profiles in scope, so a client can tell
+  // "no omp profile" from "an omp profile with no paid usage".
+  int32 configured_profiles = 3;
+  double last_collected_at = 4;    // oldest collection among profiles in scope
+  repeated SectionError errors = 5;
+  string month = 6;                // YYYY-MM the month-to-date figures cover
+}
+
+// Activity covers indexed history. Live allowances and outside-cap spending
+// are separate: included or unclassified usage has no monetary valuation.
+message GetMonitoringRequest { string profile = 1; }
+message CodexUsageGap {
+  string session_id = 1;
+  string profile = 2;
+  string profile_name = 3;
+  double started_at = 4;
+  string reason = 5;
+}
+message GetMonitoringResponse {
+  double sessions = 1;
+  double requests = 2;
+  TokenTotals tokens = 3;
+  double reasoning_tokens = 4;
+  double tool_calls = 5;
+  double estimated_cost_usd = 6 [deprecated = true];
+  bool cost_complete = 7 [deprecated = true];
+  bool usage_complete = 8;
+  double error_count = 9;
+  double duration_ms = 10;
+  double last_indexed_at = 11;
+  repeated MonitoringModel models = 12 [deprecated = true];
+  repeated CodexUsageWindow windows = 13;
+  repeated SectionError errors = 14;
+  double configured_profiles = 15;
+  double last_activity_at = 16;
+  bool tools_complete = 17;
+  bool errors_complete = 18;
+  bool duration_complete = 19;
+  repeated CodexAccountUsage accounts = 20;
+  CodexBillingSummary billing = 21;
+  repeated CodexUsageGap usage_gaps = 22;
+}
+
+service ObsService {
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+  rpc SaveProfile(SaveProfileRequest) returns (SaveProfileResponse);
+  rpc RemoveProfile(RemoveProfileRequest) returns (RemoveProfileResponse);
+  rpc SetAccountHidden(SetAccountHiddenRequest) returns (SetAccountHiddenResponse);
+  rpc RepairProfile(RepairProfileRequest) returns (RepairProfileResponse);
+  rpc ImportHistory(ImportHistoryRequest) returns (ImportHistoryResponse);
+  rpc GetMonitoring(GetMonitoringRequest) returns (GetMonitoringResponse);
+  rpc GetPayAsYouGo(GetPayAsYouGoRequest) returns (GetPayAsYouGoResponse);
+  rpc GetMeta(GetMetaRequest) returns (GetMetaResponse);
+  rpc GetAnalysisModels(GetAnalysisModelsRequest) returns (GetAnalysisModelsResponse);
+  rpc GetOverview(GetOverviewRequest) returns (GetOverviewResponse);
+  rpc GetSpend(GetSpendRequest) returns (GetSpendResponse);
+  rpc GetFindings(GetFindingsRequest) returns (GetFindingsResponse);
+  rpc GetHealth(GetHealthRequest) returns (GetHealthResponse);
+  rpc ListProfiles(ListProfilesRequest) returns (ListProfilesResponse);
+  // GetUsageSnapshot is the routing read, so it also answers GET and can be
+  // opened as a URL: ?encoding=json&message={} (connect-go requires both
+  // parameters, and an empty message is rejected). An on-demand probe, when
+  // USAGE_ON_DEMAND_PROBE enables one, only refreshes the reading it returns.
+  rpc GetUsageSnapshot(GetUsageSnapshotRequest) returns (GetUsageSnapshotResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc GetAccountHistory(GetAccountHistoryRequest) returns (GetAccountHistoryResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc StartAnalysis(StartAnalysisRequest) returns (StartAnalysisResponse);
+  rpc GetAnalysis(GetAnalysisRequest) returns (GetAnalysisResponse);
+  rpc StartAdvice(StartAdviceRequest) returns (StartAdviceResponse);
+  rpc GetAdvice(GetAdviceRequest) returns (GetAdviceResponse);
+}
