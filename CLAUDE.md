@@ -453,6 +453,7 @@ a few frames, and crop the top right corner.
   five_hour at 14% against a reset 5.5 hours past while the freshly probed
   cache read 0%, and a tap that freezes above a threshold would have kept
   firing that threshold for a window that had since reset to empty.
+  - **The tap publishes only what a session has just heard.** Every open session of a profile renders into one `statusline-latest.<profile>.json`, and each render carries the figures that session last heard from the API, however long ago. Measured 2026-11-20: a session idle since just before an early weekly reset kept rendering 98% while its account stood at 20%, and the dashboard showed 98% for minutes at a time, four times in one afternoon. `bin/statusline-tap.sh` therefore keeps a mark per session in `state/statusline-seen/` and publishes only when the session's figures or its running API time (`cost.total_api_duration_ms`) moved since its own previous render, or when the file is already that session's, which keeps the active session's file fresh between replies. A first sighting only records, since nothing says how old its figures are; a render without a session id publishes as before. `internal/installer/statusline_test.go`'s `TestStatuslineTapIgnoresIdleSessions` pins it.
 - **The reset timestamp is an alert dedup key, so its last second matters.**
   `bin/usage-alert.sh` keys "once per threshold per reset period" on
   `claude_plan_window_reset_timestamp_seconds`, so any wobble in that number
