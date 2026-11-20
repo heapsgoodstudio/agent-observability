@@ -138,6 +138,8 @@ The statusline is the line Claude Code renders at the bottom of its terminal. If
 
 If the profile already has its own statusline script, the installer leaves it alone. To integrate it manually, pipe stdin to `bin/statusline-tap.sh` in the background, so the poller sees live rate limits, and `cat state/statusline-segment.<profile>.txt` at the end of the line, the poller's pre-rendered month-to-date overage tail. The tap and default statusline resolve the current directory from `CLAUDE_CONFIG_DIR` (or `~/.claude`) to the stable registry ID. Display-name and directory edits therefore retain the same telemetry label and per-profile files. Gate either of them to one profile and the rest get no live statusline source, so their plan windows fall back to the much slower `.claude.json` cache.
 
+Every open session of a profile renders into the same tap file, and each render carries the figures that session last heard from the API, however long ago. The tap therefore keeps a mark per session in `state/statusline-seen/` and publishes a render only when its session has heard from the API since its own previous render (its figures or its running API time moved), or when the file is already that session's. A session it has not seen before only records its figures, since nothing says how old they are. An idle session holding figures from before a reset cannot put them back over a newer reading.
+
 ## What the dashboard shows
 
 The dark-first desktop dashboard opens on all accounts. Direct sidebar links switch the displayed account without changing CLI authentication. Provider/account/profile scope and Activity filters are carried in the URL.
